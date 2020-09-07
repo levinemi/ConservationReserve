@@ -1,0 +1,165 @@
+---
+title: "Camping on Conservation Reserves"
+author: "levinemi"
+date: "04/09/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_knit$set(root.dir = 'C:/Users/miche/Documents')
+```
+
+# Camping at Conservation Reserves
+In the summer, I like to go camping with my family. Our favorite type of camping is backcountry camping, where you have to canoe or boat to your site.  
+
+To make camping with a young family easier, we use a boat with a small motor. There are many provincial parks in Ontario with backcountry camping. Our favorite park is The Massassauga.  The main access point has a boat launch and we easily access lots of secluded sites.
+
+This past year, with the COVID-19 pandemic, backcountry camping seemed to become very popular and we found that all the sites at The Massassuga were booked.  
+
+Luckily, Ontario has numerous conservation reserves across the provinces. The 295 conservation reserves are public lands that have been preserved for ecological, recreation, ETC.!!! Some conservation reserves permit camping, but there isn't an easy to access list of which ones allow camping. The information is available online(https://www.ontario.ca/page/conservation-reserve-management-direction), but it's buried in individual policy reports.  
+
+
+Instead of clicking through and searching the reports individually, I wanted to create a map to make it easier to find family-friendly places to camp.  Using the code below, I scraped the information about camping from the ministry of natural resources website, and desplayed it along with information about public boat launches across the province.  
+
+Happy Camping!
+
+### Load R Libraries
+```{r Load Libraries, warning=FALSE, message=FALSE}
+library(sf)
+library(raster)
+library(spData) #includes the world dataset
+library(rgdal)
+library(rvest) #web scraping/harvesting
+library(xml2) #web scraping/xml reader
+library(tmap) #map creation
+library(tidyverse)#includes ggplot2, dplyr, tidyr, purrr, stringr, etc.
+```
+
+### Load Shape and Data Files 
+GIS shapefiles for the conservation reserves (CR) and boat launches are available at the following sites on the Ontario GeoHub:
+* https://geohub.lio.gov.on.ca/datasets/conservation-reserve-regulated
+* https://geohub.lio.gov.on.ca/datasets/fishing-access-point
+
+I downloaded the files to a local directory called "Conservation Reserve" and loaded them as sp objects.
+```{r Load Shape Files}
+setwd("~/")
+shp_cr <- shapefile("Conservation reserve/Conservation_Reserve_Regulated.shp") #Conservation reserves
+shp_fa <- shapefile("Conservation reserve/Fishing_Access_Point.shp") #Boat launches 
+```
+
+I converted the shape files to sf format to present them on using tmap package, I only retained a limited amount of the data assocated with each conservation reserves. I kept the attribute "PROTECTED_", which stands for "Protected Site Identifier". It is a unique ID for each CR that I will use for web scraping and data linking.  I also kept "COMMON_SHO", which is common name for each CR that will be displayed on the map.
+```{r Convert to sf objects for mapping}
+
+shp_cr_sf <- st_as_sf(shp_cr) %>% select("PROTECTED_", 
+                                         "COMMON_SHO")
+
+shp_fa_sf <- st_as_sf(shp_fa)
+```
+
+### Gather Camping Information
+When you navigate to the policy report for each conservation reserve, the activities permitted are described in a section called managment direction. Some examples activities that are allowed at conservation reserves are sport fishing, mountain biking, food gathering and campgrounds. For each activity the policy report indicates "yes", "no" or "maybe". "Yes" means the activity is allowed, "no" mean it is not, and "maybe" means it's allowed with limitations (e.g., only in certain areas or at certain times of year).   
+
+Individual reports can be accessed from the ministry's search tool.  The URL for each report has the same format: https://www.gisapplication.lrc.gov.on.ca/services/CLUPA/xmlReader.aspx?xsl=web-primary.xsl&type=primary&POLICY_IDENT=C213
+
+The URL is the same for each CR except for the protected site identifier at the end of the URL, after the "=".  In the URL above the identified is C213 for the Attlee Central Forest Conservation Reserve. By varying just the protected site identifier, I can read the html content of each policy report into R. 
+
+```{r Conservation Reserve ID list}
+#create a list of conservation reserve IDs
+cr_id_list <- shp_cr_sf$PROTECTED_
+
+head(cr_id_list)
+```
+
+```{r Policy Report function}
+get_pr <- function(id) {
+  
+  # get url from input and read html
+  input <- paste0("https://www.gisapplication.lrc.gov.on.ca/services/CLUPA/xmlReader.aspx?xsl=web-primary.xsl&type=primary&POLICY_IDENT=", id) 
+  crpr <- read_html(input)
+  
+  # scrape data
+  cr_use <- crpr %>% 
+    html_nodes('body') %>% 
+    xml_find_all("//td[contains(@class, 'management_direction_permittedUse_cell')]") %>% 
+    html_text
+  
+  cr_flag <- crpr %>% 
+    html_nodes('body') %>% 
+    xml_find_all("//td[contains(@class, 'management_direction_permittedFlag_cell')]") %>% 
+    html_text 
+  
+  cr_flag <- cr_flag %>% discard(cr_flag=="\r\n            Permitted\r\n          ")
+  
+  cr_text <- crpr %>% 
+    html_nodes('body') %>% 
+    xml_find_all("//td[contains(@class, 'management_direction_text')]") %>% 
+    html_text
+  
+  #test the values for blanks #Not required when using possibly to wrap the function
+  #if(length(cr_use)==0){cr_use=NA}
+  #if(length(cr_flag)==0){cr_flag=NA}
+  #if(length(cr_text)==0){cr_text=NA}
+  
+  # create row and add to existing dataframe
+  newrow <- data.frame ("id"=id,"use" = cr_use, "flag" = cr_flag, "text" = cr_text)
+  
+  pr_df <<- rbind(pr_df,newrow)
+  
+}
+```
+
+```{r Scrape Policy Report Data, warning=FALSE, results='hide'}
+#create a blank dataframe
+pr_df <- data.frame ("id"=character(),"use" = character(), "flag" = character(), "text" = character(), stringsAsFactors = F)
+
+#Pass the list of conservation reserve IDs to the get_policyreport function 
+#lapply(cr_id_list,function(x){get_pr(x)}) #this uses base R functions
+map(cr_id_list, possibly(get_pr,NA))
+```
+```{r Policy Report Dataframe}
+head(pr_df)
+```
+
+```{r Export Policy Report Data to CSV}
+#export the dataframe of conservation reserve activities to .csv format
+write.csv(pr_df, "Conservation reserve/policyreports_conservationreserve.csv")
+```
+
+```{r OPTIONAL Read in Policy Report Data, eval=FALSE}
+# After the data is scraped and stored in CSV, use this optional chunk to load policy report data into a dataframe
+pr_df <- read.csv("/Conservation reserve/policyreports_conservationreserve.csv") %>% select(-X)
+```
+
+```{r Add Camping Info to Shape File}
+#combine the policy report data about campgrounds with the cr_sf shapefile
+shp_cr_sf <- pr_df %>% 
+  filter(use=="Campgrounds") %>% 
+  select(id,use,flag) %>% 
+  spread(use,flag) %>% 
+  right_join(shp_cr_sf,by = c("id"="PROTECTED_"))
+
+shp_cr_sf <- st_as_sf(shp_cr_sf) #Convert the object back to sf format
+```
+
+### Create an Interactive Map
+
+```{r Map Mode}
+tmap_mode("view") #sets the system to interactive viewing mode
+```
+
+```{r Map Creation}
+#Create a map with conservation reserves and public boat launches in Ontario
+tm_basemap("OpenStreetMap.Mapnik")+
+tm_shape(shp_cr_sf)+ #specifies the shape
+  tm_polygons("Campgrounds", palette = "Set2", alpha = 0.7, id = "COMMON_SHO")+ #adds the layers, if i wanted different colour polygons based on the a column in the data, just add the column name to this function
+tm_shape(shp_fa_sf)+ 
+  tm_dots("FISHING_AC", palette = "-Set2", id="SITE_NAME", title = "Water Access Point")+
+  tm_layout("Camping at Conservation Reserves",
+            title.size = 10,
+            legend.title.size = 2,
+            legend.text.size = 1)+
+  tm_view(view.legend.position = c("left","bottom"))
+```
